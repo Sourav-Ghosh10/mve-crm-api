@@ -25,17 +25,17 @@ const syncWithExternalTime = async () => {
                 if (!dateStr.includes('+') && !dateStr.includes('Z')) {
                     dateStr += 'Z';
                 }
-                timestamp = new Date(dateStr).getTime();
-            }
+                const timestamp = new Date(dateStr).getTime();
 
-            if (timestamp) {
-                syncPoint = {
-                    realTime: timestamp,
-                    localUptime: process.uptime(),
-                    isSynced: true
-                };
-                logger.info(`🕒 Server time synchronized with ${source}`);
-                return;
+                if (timestamp) {
+                    syncPoint = {
+                        realTime: timestamp,
+                        localUptime: process.uptime(),
+                        isSynced: true
+                    };
+                    logger.info(`🕒 Server time synchronized with ${source}`);
+                    return;
+                }
             }
         } catch (error) {
             logger.warn(`🕒 Failed to sync with ${source}: ${error.message}`);
