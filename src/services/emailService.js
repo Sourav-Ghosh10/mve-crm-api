@@ -1,58 +1,31 @@
-const axios = require('axios');
+const { getEmailTransporter } = require('../config/email');
 const logger = require('../utils/logger');
 const moment = require('moment');
 
 const emailService = {
   sendEmail: async ({ to, subject, text, html, attachments }) => {
     try {
-      const apiToken = process.env.MAIL_TOKEN;
+      const transporter = getEmailTransporter();
 
-      if (!apiToken) {
-        logger.error('Sender.net API token (MAIL_TOKEN) not configured');
+      if (!transporter) {
+        logger.error('Email transporter not initialized');
         return false;
       }
 
-      const emailData = {
-        from: {
-          email: process.env.EMAIL_FROM,
-          name: process.env.EMAIL_FROM_NAME,
-        },
-        to: {
-          email: to,
-        },
+      const mailOptions = {
+        from: `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
+        to,
         subject,
+        text,
         html: html || text,
+        attachments: attachments || [],
       };
 
-      if (attachments && attachments.length > 0) {
-        emailData.attachments = attachments.reduce((acc, att) => {
-          let { content } = att;
-          if (Buffer.isBuffer(content)) {
-            content = content.toString('base64');
-          }
-          acc[att.filename] = content;
-          return acc;
-        }, {});
-      }
-
-      const response = await axios.post('https://api.sender.net/v2/message/send', emailData, {
-        headers: {
-          Authorization: `Bearer ${apiToken}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-      });
-
-      if (response.status === 202 || response.status === 200) {
-        logger.info(`Email sent via Sender.net: ${response.data.message_id || 'success'}`);
-        return true;
-      }
-
-      logger.error('Failed to send email via Sender.net:', response.data);
-      return false;
+      const info = await transporter.sendMail(mailOptions);
+      logger.info(`Email sent successfully: ${info.messageId}`);
+      return true;
     } catch (error) {
-      const errorData = error.response ? error.response.data : error.message;
-      logger.error('Email send error (Sender.net):', errorData);
+      logger.error('Email send error (SMTP):', error);
       return false;
     }
   },

@@ -5,16 +5,27 @@ let transporter = null;
 
 const createEmailTransporter = () => {
   try {
-    transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST,
-      port: parseInt(process.env.EMAIL_PORT, 10),
-      // secure: parseInt(process.env.EMAIL_PORT, 10) === 465, // true for 465, false for other ports
-      secure: false,
+    const isGmail = process.env.EMAIL_HOST?.includes('gmail.com');
+
+    logger.info(`Attempting to initialize email transporter for: ${process.env.EMAIL_USER?.trim()}`);
+
+    const config = isGmail ? {
+      service: 'gmail',
       auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD,
+        user: process.env.EMAIL_USER?.trim(),
+        pass: process.env.EMAIL_PASSWORD?.trim(),
       },
-    });
+    } : {
+      host: process.env.EMAIL_HOST?.trim(),
+      port: parseInt(process.env.EMAIL_PORT, 10),
+      secure: parseInt(process.env.EMAIL_PORT, 10) === 465,
+      auth: {
+        user: process.env.EMAIL_USER?.trim(),
+        pass: process.env.EMAIL_PASSWORD?.trim(),
+      },
+    };
+
+    transporter = nodemailer.createTransport(config);
 
     // Verify connection configuration
     transporter.verify((error, _success) => {
