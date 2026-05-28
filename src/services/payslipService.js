@@ -2,10 +2,14 @@ const Payslip = require('../models/Payslip');
 const SalaryConfig = require('../models/SalaryConfig');
 const AllowanceDeductionMaster = require('../models/AllowanceDeductionMaster');
 const User = require('../models/User');
+const Attendance = require('../models/Attendance');
+const Schedule = require('../models/Schedule');
 const emailService = require('./emailService');
 const { generatePayslipPDF } = require('../utils/pdfGenerator');
 const { NotFoundError, ConflictError } = require('../utils/errors');
 const logger = require('../utils/logger');
+const { getPayrollCycleInterval } = require('../utils/payrollCycleHelper');
+const moment = require('moment-timezone');
 
 const payslipService = {
   getPayslips: async ({ page, limit, filters }) => {
@@ -17,7 +21,7 @@ const payslipService = {
 
     const [payslips, total] = await Promise.all([
       Payslip.find(query)
-        .populate('employeeId', 'personalInfo employment')
+        .populate('employeeId', 'employeeId personalInfo employment')
         .sort({ year: -1, month: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -30,7 +34,7 @@ const payslipService = {
 
   getPayslipById: async (id) => {
     const payslip = await Payslip.findById(id)
-      .populate('employeeId', 'personalInfo employment')
+      .populate('employeeId', 'employeeId personalInfo employment')
       .populate('salaryConfigId')
       .lean();
     if (!payslip) {
@@ -41,6 +45,43 @@ const payslipService = {
 
   generatePayslip: async (data) => {
     const { employeeId, month, year, daysWorked, totalDays, lopDays } = data;
+
+    // Resolve the start and end dates of the target month/year's payroll cycle
+    const { startDate, endDate } = await getPayrollCycleInterval(year, month);
+
+    if (new Date() <= endDate) {
+      throw new ConflictError(`Generation unlocks after ${moment(endDate).format('DD MMM YYYY')}`);
+    }
+
+    // Fetch attendance records and schedules in cycle
+    const attendanceRecords = await Attendance.find({
+      employeeId,
+      date: { $gte: startDate, $lte: endDate },
+    });
+
+    const nightSchedules = await Schedule.find({
+      employeeId,
+      shiftType: 'night',
+      date: { $gte: startDate, $lte: endDate },
+    });
+
+    // 1. Overtime: calculate total overtime hours from attendance records
+    const totalOTHours = attendanceRecords.reduce((sum, rec) => sum + (rec.overtime || 0), 0);
+
+    // 2. Night Shift: count active/qualified night shifts
+    const activeAttendanceDates = new Set(
+      attendanceRecords
+        .filter(rec => ['present', 'half-day'].includes(rec.status))
+        .map(rec => moment(rec.date).format('YYYY-MM-DD'))
+    );
+
+    let nightShiftsCount = 0;
+    for (const sched of nightSchedules) {
+      const schedDateStr = moment(sched.date).format('YYYY-MM-DD');
+      if (activeAttendanceDates.has(schedDateStr)) {
+        nightShiftsCount++;
+      }
+    }
 
     // Check if payslip already exists
     const existing = await Payslip.findOne({ employeeId, month, year });
@@ -77,12 +118,15 @@ const payslipService = {
     for (const item of salaryConfig.items) {
       if (!item.isActive) continue;
       const master = item.masterId;
-      if (!master || master.isBalancing) continue;
+      if (!master || master.isBalancing || master.code === 'OVERTIME' || master.code === 'NIGHT_SHIFT') continue;
 
       let amount = item.overrideValue !== null ? Number(item.overrideValue) : Number(master.value || 0);
 
       // We only handle CTC based or fixed in first pass
-      if ((master.calculationType === 'PERCENTAGE' || master.calculationType === 'SLAB') && (master.percentageOf === 'BASIC' || master.percentageOf === 'GROSS')) {
+      if (
+        master.calculationType === 'SLAB' || 
+        (master.calculationType === 'PERCENTAGE' && (master.percentageOf === 'BASIC' || master.percentageOf === 'GROSS'))
+      ) {
         processedItems.push(item); // Save for later passes
         continue;
       }
@@ -114,11 +158,10 @@ const payslipService = {
     // Second Pass: Calculate components based on BASIC
     for (const item of processedItems) {
       const master = item.masterId;
-      let amount = item.overrideValue !== null ? Number(item.overrideValue) : Number(master.value || 0);
+      if (!(master.calculationType === 'PERCENTAGE' && master.percentageOf === 'BASIC')) continue;
 
-      if (master.calculationType === 'PERCENTAGE' && master.percentageOf === 'BASIC') {
-        amount = (basicComponentValue * amount) / 100;
-      }
+      let amount = item.overrideValue !== null ? Number(item.overrideValue) : Number(master.value || 0);
+      amount = (basicComponentValue * amount) / 100;
 
       const finalAmount = (amount / safeTotalDays) * safeDaysWorked;
 
@@ -157,11 +200,62 @@ const payslipService = {
       else totalDeductions += balancingAmount;
     }
 
+    // Pass 3.5: Overtime & Night Shift Allowances (computed post-balancing but pre-gross-based-deductions)
+    for (const item of salaryConfig.items) {
+      if (!item.isActive) continue;
+      const master = item.masterId;
+      if (!master || (master.code !== 'OVERTIME' && master.code !== 'NIGHT_SHIFT')) continue;
+
+      let computedAmount = 0;
+
+      if (master.code === 'OVERTIME') {
+        if (master.calculationType === 'SLAB') {
+          const slab = (master.slabs || []).find(s => 
+            totalOTHours >= s.minAmount && (!s.maxAmount || totalOTHours <= s.maxAmount)
+          );
+          const hourlyRate = slab ? Number(slab.fixedAmount) : 0;
+          computedAmount = totalOTHours * hourlyRate;
+        } else if (master.calculationType === 'PERCENTAGE') {
+          const percentage = item.overrideValue !== null ? Number(item.overrideValue) : Number(master.value || 0);
+          const hourlyRate = (basicComponentValue / safeTotalDays / 8) * (percentage / 100);
+          computedAmount = totalOTHours * hourlyRate;
+        } else {
+          const hourlyRate = item.overrideValue !== null ? Number(item.overrideValue) : Number(master.value || 0);
+          computedAmount = totalOTHours * hourlyRate;
+        }
+      } else if (master.code === 'NIGHT_SHIFT') {
+        if (master.calculationType === 'SLAB') {
+          const slab = (master.slabs || []).find(s => 
+            nightShiftsCount >= s.minAmount && (!s.maxAmount || nightShiftsCount <= s.maxAmount)
+          );
+          const shiftRate = slab ? Number(slab.fixedAmount) : 0;
+          computedAmount = nightShiftsCount * shiftRate;
+        } else {
+          const shiftRate = item.overrideValue !== null ? Number(item.overrideValue) : Number(master.value || 0);
+          computedAmount = nightShiftsCount * shiftRate;
+        }
+      }
+
+      const finalAmount = Math.round(computedAmount * 100) / 100;
+
+      items.push({
+        masterId: master._id,
+        name: master.name,
+        code: master.code,
+        type: master.type,
+        amount: finalAmount,
+        isManualOverride: false
+      });
+
+      if (master.type === 'ALLOWANCE') grossEarnings += finalAmount;
+      else totalDeductions += finalAmount;
+    }
+
     // Fourth Pass: Calculate components based on GROSS (finalized earnings)
     for (const item of salaryConfig.items) {
       if (!item.isActive) continue;
       const master = item.masterId;
-      if (!master || master.isBalancing) continue; // Balancing handled in Pass 3
+      if (!master || master.isBalancing || master.code === 'OVERTIME' || master.code === 'NIGHT_SHIFT') continue; // Balancing handled in Pass 3, OT/Night shift in Pass 3.5
 
       if (master.calculationType === 'PERCENTAGE' && master.percentageOf === 'GROSS') {
         const amount = (grossEarnings * master.value) / 100;

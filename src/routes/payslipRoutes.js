@@ -97,6 +97,8 @@ router.get('/', payslipController.getPayslips);
  *         description: Payslip generated
  */
 router.post('/generate', validate(generatePayslipSchema), payslipController.generatePayslip);
+router.post('/publish', payslipController.publishPayslips);
+router.get('/export/excel', payslipController.exportPayslipsExcel);
 
 /**
  * @swagger
@@ -165,5 +167,6 @@ router.delete('/:id', validate(idParamSchema, 'params'), payslipController.delet
  */
 router.patch('/:id/status', validate(idParamSchema, 'params'), validate(updatePayslipStatusSchema), payslipController.updateStatus);
 router.post('/:id/send-email', validate(idParamSchema, 'params'), payslipController.sendPayslipEmail);
+router.get('/:id/download', validate(idParamSchema, 'params'), payslipController.downloadPayslipPDF);
 
 module.exports = router;

@@ -60,9 +60,13 @@ const registerEventListeners = (enableReconnection = false) => {
     logger.info('🟢 MongoDB connection established.');
   });
 
-  db.on('open', () => {
+  db.on('open', async () => {
     require('fs').writeFileSync('db_info.txt', `Host: ${mongoose.connection.host}, DB: ${mongoose.connection.name}\n`);
     logger.info(`🔗 MongoDB connection open. Host: ${mongoose.connection.host}, DB: ${mongoose.connection.name}`);
+    
+    // Seed default Overtime and Night Shift Allowance masters
+    const { seedAllowanceMasters } = require('../utils/seedMasters');
+    await seedAllowanceMasters();
   });
 
   // Graceful shutdown on application termination (e.g., Ctrl+C or kill signal)

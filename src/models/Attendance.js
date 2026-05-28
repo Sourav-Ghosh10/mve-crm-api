@@ -18,22 +18,34 @@ const attendanceSchema = new mongoose.Schema(
       time: Date,
       ipAddress: String,
       deviceInfo: String,
+      latitude: Number,
+      longitude: Number,
+      address: String,
     },
     checkOut: {
       time: Date,
       ipAddress: String,
       deviceInfo: String,
+      latitude: Number,
+      longitude: Number,
+      address: String,
     },
     sessions: [{
       checkIn: {
         time: Date,
         ipAddress: String,
         deviceInfo: String,
+        latitude: Number,
+        longitude: Number,
+        address: String,
       },
       checkOut: {
         time: Date,
         ipAddress: String,
         deviceInfo: String,
+        latitude: Number,
+        longitude: Number,
+        address: String,
       },
       duration: Number, // in hours
       durationString: String, // e.g., "1H 2M 2S"
@@ -137,6 +149,9 @@ attendanceSchema.pre('save', function () {
   const flooredNetMins = Math.floor(netMins);
   this.totalHours = Number((flooredNetMins / 60).toFixed(2));
 
+  // Automatically calculate overtime (hours exceeding standard 8 net hours)
+  this.overtime = Math.max(0, Number((this.totalHours - 8).toFixed(2)));
+
   // For totalDurationString, we use Net time (Gross - Breaks)
   const netMs = Math.max(0, totalMs - (breakMins * 60 * 1000));
   this.totalDurationString = formatDuration(netMs);
@@ -150,6 +165,12 @@ attendanceSchema.pre('save', function () {
     });
   }
   this.totalBreakDurationString = formatDuration(breakMins * 60 * 1000);
+
+  // Sync top-level isLate and isEarlyLeave with sessions
+  if (this.sessions && this.sessions.length > 0) {
+    this.isLate = this.sessions.some(s => s.isLate);
+    this.isEarlyLeave = this.sessions.some(s => s.isEarlyLeave);
+  }
 });
 
 const Attendance = mongoose.model('Attendance', attendanceSchema);
