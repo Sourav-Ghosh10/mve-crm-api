@@ -132,6 +132,7 @@ app.use('/api/system-settings', require('./routes/systemSettingsRoutes'));
 app.use('/api/break-types', require('./routes/breakTypeRoutes'));
 app.use('/api/announcements', require('./routes/announcementRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
+app.use('/api/dashboard', require('./routes/dashboardRoutes'));
 app.use('/api/payroll/masters', require('./routes/allowanceDeductionRoutes'));
 app.use('/api/payroll/salary-configs', require('./routes/salaryConfigRoutes'));
 app.use('/api/payroll/payslips', require('./routes/payslipRoutes'));
