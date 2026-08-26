@@ -28,6 +28,8 @@ const createLeaveSchema = Joi.object({
 
 const updateLeaveStatusSchema = Joi.object({
   status: Joi.string().valid('approved', 'rejected').required(),
+  isDeductFromBalance: Joi.boolean().optional(),
+  approvalComment: Joi.string().max(500).optional(),
   rejectionReason: Joi.string().max(500).when('status', {
     is: 'rejected',
     then: Joi.required(),

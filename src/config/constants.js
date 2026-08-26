@@ -1,6 +1,7 @@
 // User Roles
 const USER_ROLES = {
   ADMIN: 'admin',
+  SUPER_ADMIN: 'super admin',
   HR: 'hr',
   MANAGER: 'manager',
   EMPLOYEE: 'employee',

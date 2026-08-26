@@ -4,22 +4,22 @@ const { ForbiddenError } = require('../utils/errors');
  * Authorize middleware - restrict access based on roles
  * @param  {...string} allowedRoles - Roles that can access the route
  */
-const authorize =
-  (...allowedRoles) =>
-  (req, res, next) => {
+const authorize = (...allowedRoles) => {
+  return (req, res, next) => {
     if (!req.user) {
       return next(new ForbiddenError('User not authenticated'));
     }
 
     const userRole = (req.user.employment?.role || '').toLowerCase();
-    const isAdmin = userRole === 'admin' || userRole === 'super admin' || req.user.isAdmin === true;
+    const isAdmin = req.user.isAdmin || userRole === 'admin' || userRole === 'super admin' || userRole === 'hr';
 
-    if (isAdmin || allowedRoles.map(r => r.toLowerCase()).includes(userRole)) {
+    if (isAdmin || allowedRoles.filter(Boolean).map(r => r.toLowerCase()).includes(userRole)) {
       return next();
     }
 
     return next(new ForbiddenError(`Access denied. Required roles: ${allowedRoles.join(', ')}`));
   };
+};
 
 /**
  * Permission-based authorization
@@ -74,7 +74,7 @@ const authorizeOwnerOrRole =
     const isOwner = userId === resourceUserId;
 
     // Check if user has required role
-    const hasRole = allowedRoles.map(r => r.toLowerCase()).includes(userRole);
+    const hasRole = allowedRoles.filter(Boolean).map(r => r.toLowerCase()).includes(userRole);
 
     if (isOwner || isAdmin || hasRole) {
       return next();

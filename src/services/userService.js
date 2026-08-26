@@ -100,6 +100,22 @@ const userService = {
       }
     }
 
+    if (userData.leaveBalance) {
+      const LeaveType = require('../models/LeaveType');
+      const activeLeaveTypes = await LeaveType.find({ isActive: true });
+      const typeResolutionMap = {};
+      activeLeaveTypes.forEach(lt => {
+          typeResolutionMap[lt.name.toLowerCase()] = lt.name;
+          typeResolutionMap[lt.code.toLowerCase()] = lt.name;
+      });
+      const normalizedLeaveBalance = {};
+      for (const [key, value] of Object.entries(userData.leaveBalance)) {
+          const canonicalName = typeResolutionMap[key.toLowerCase()] || key;
+          normalizedLeaveBalance[canonicalName] = value;
+      }
+      userData.leaveBalance = normalizedLeaveBalance;
+    }
+
     const user = await User.create(userData);
 
     logger.info(`User created: ${user.employeeId}`);
@@ -146,7 +162,6 @@ const userService = {
       'isActive',
       'isHolidayApplicable',
       'allowedIPs',
-      'leaveBalance',
       'lastLogin',
     ];
 
@@ -155,6 +170,22 @@ const userService = {
         updatePayload[field] = updateData[field];
       }
     });
+
+    if (updateData.leaveBalance) {
+      const LeaveType = require('../models/LeaveType');
+      const activeLeaveTypes = await LeaveType.find({ isActive: true });
+      const typeResolutionMap = {};
+      activeLeaveTypes.forEach(lt => {
+          typeResolutionMap[lt.name.toLowerCase()] = lt.name;
+          typeResolutionMap[lt.code.toLowerCase()] = lt.name;
+      });
+      const normalizedLeaveBalance = {};
+      for (const [key, value] of Object.entries(updateData.leaveBalance)) {
+          const canonicalName = typeResolutionMap[key.toLowerCase()] || key;
+          normalizedLeaveBalance[canonicalName] = value;
+      }
+      updatePayload.leaveBalance = normalizedLeaveBalance;
+    }
 
     updatePayload.updatedAt = new Date();
 

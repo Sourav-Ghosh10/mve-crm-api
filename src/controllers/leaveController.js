@@ -440,9 +440,10 @@ const leaveController = {
         let targetUserId = req.user._id;
 
         if (req.params.userId) {
-            // Check permission: Admin or Manager of that user
-            // For simplicity, allowing Admin/HR or self
-            if (req.user.employment.role === 'admin' || req.user.employment.role === 'hr' || req.user.employment.role === 'manager') {
+            const userRole = (req.user.employment?.role || '').toLowerCase();
+            const isAdminOrHR = userRole === 'admin' || userRole === 'super admin' || userRole === 'hr' || userRole === 'manager' || req.user.isAdmin;
+            
+            if (isAdminOrHR) {
                 targetUserId = req.params.userId;
             } else if (req.params.userId !== req.user._id.toString()) {
                 throw new ForbiddenError('You can only view your own leave balance.');
@@ -911,6 +912,7 @@ const leaveController = {
                 }
 
                 user.leaveBalance.set(canonicalName, item.value);
+                user.markModified('leaveBalance');
             }
         }
 
@@ -924,16 +926,23 @@ const leaveController = {
 
     // Add Opening Balance
     addOpeningBalance: catchAsync(async (req, res) => {
-        const { employeeId, leaveTypeId, amount, description } = req.body;
+        const { employeeId, amount, description } = req.body;
+        const leaveTypeId = req.body.leaveTypeId || req.body.leaveType;
+        
+        if (!leaveTypeId) {
+            throw new BadRequestError('Leave type ID is required');
+        }
         
         const user = await User.findById(employeeId);
         if (!user) throw new NotFoundError('User not found');
 
         const activeLeaveTypes = await LeaveType.find({ isActive: true });
+        const lowerLeaveTypeId = leaveTypeId.toString().toLowerCase();
+        
         let matchedLeaveType = activeLeaveTypes.find(lt => 
             lt._id.toString() === leaveTypeId || 
-            lt.code.toLowerCase() === leaveTypeId.toLowerCase() || 
-            lt.name.toLowerCase() === leaveTypeId.toLowerCase()
+            (lt.code && lt.code.toLowerCase() === lowerLeaveTypeId) || 
+            (lt.name && lt.name.toLowerCase() === lowerLeaveTypeId)
         );
 
         if (!matchedLeaveType) {
@@ -953,14 +962,7 @@ const leaveController = {
             createdBy: req.user._id
         });
 
-        // Ensure user.leaveBalance is initialized
-        if (!user.leaveBalance) {
-            user.leaveBalance = new Map();
-        }
-
-        // Set the opening balance
-        user.leaveBalance.set(canonicalName, amount);
-        await user.save();
+        await require('mongoose').model('User').updateOne({ _id: employeeId }, { $set: { ['leaveBalance.' + canonicalName]: amount } });
 
         res.json({
             status: 'success',
