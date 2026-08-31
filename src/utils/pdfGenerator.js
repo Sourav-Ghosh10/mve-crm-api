@@ -2,6 +2,8 @@ const PDFDocument = require('pdfkit');
 const moment = require('moment');
 const SystemSettings = require('../models/SystemSettings');
 const Payslip = require('../models/Payslip');
+const Leave = require('../models/Leave');
+const LeaveType = require('../models/LeaveType');
 
 const NAVY = '#174A7C';
 const BLUE = '#1796D2';
@@ -68,12 +70,38 @@ const getFinancialYear = (payslip) => {
   };
 };
 
+const getOrdinal = (n) => {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+};
+
 const generatePayslipPDF = async (payslip, user) => {
-  const [signatureSetting, currencyNameSetting, currencySymbolSetting] = await Promise.all([
+  const startOfMonth = new Date(payslip.year, payslip.month - 1, 1);
+  const endOfMonth = new Date(payslip.year, payslip.month, 0, 23, 59, 59, 999);
+
+  const [
+    signatureSetting,
+    currencyNameSetting,
+    currencySymbolSetting,
+    leaveTypes,
+    monthLeaves,
+  ] = await Promise.all([
     SystemSettings.findOne({ key: 'payslip_signature' }),
     SystemSettings.findOne({ key: 'currency_name' }),
     SystemSettings.findOne({ key: 'currency_symbol' }),
+    LeaveType.find({ isActive: true }).lean(),
+    Leave.find({
+      employeeId: user._id || payslip.employeeId,
+      status: 'approved',
+      $or: [
+        { startDate: { $gte: startOfMonth, $lte: endOfMonth } },
+        { endDate: { $gte: startOfMonth, $lte: endOfMonth } },
+        { startDate: { $lte: startOfMonth }, endDate: { $gte: endOfMonth } },
+      ],
+    }).lean(),
   ]);
+
   const currencyName = currencyNameSetting?.value || 'Rupees';
   const currencySymbol = currencySymbolSetting?.value || 'Rs.';
   const fy = getFinancialYear(payslip);
@@ -130,12 +158,12 @@ const generatePayslipPDF = async (payslip, user) => {
       const email = user.personalInfo?.email || '-';
       const annualCtc = Number(payslip.monthlyCTC || 0) * 12;
       const sectionTitle = (title, y) => {
-        doc.rect(left, y, 3, 18).fill(BLUE);
+        doc.rect(left, y, 3, 16).fill(BLUE);
         doc
           .fillColor(NAVY)
           .font('Helvetica-Bold')
-          .fontSize(9.5)
-          .text(title, left + 9, y + 4);
+          .fontSize(9)
+          .text(title, left + 9, y + 3.5);
       };
       const line = (y) =>
         doc.strokeColor(BORDER).lineWidth(0.6).moveTo(left, y).lineTo(right, y).stroke();
@@ -143,39 +171,37 @@ const generatePayslipPDF = async (payslip, user) => {
         doc
           .fillColor(bold ? NAVY : '#14233A')
           .font(bold ? 'Helvetica-Bold' : 'Helvetica')
-          .fontSize(8.2)
-          .text(String(text || '-'), x + 6, y + 6, { width: w - 12, align, lineBreak: false });
+          .fontSize(8)
+          .text(String(text || '-'), x + 5, y + 4.5, { width: w - 10, align, lineBreak: false });
 
       const logoPath = require('path').join(__dirname, '../../..', 'mve-crm-employee', 'public', 'logo.png');
       try {
-        // Increased logo size and moved it slightly up to align nicely
         doc.image(logoPath, left - 10, 15, { fit: [110, 90] });
       } catch (e) {
-        doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(10).text('AM PRO STAFF', left, 45);
+        doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(10).text('AA SERVICES', left, 45);
       }
 
-      // Shift text further right to accommodate the larger logo
       const textLeft = left + 105;
-      doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(16).text('AA SERVICES', textLeft, 26);
+      doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(16).text('AA SERVICES', textLeft, 24);
       
-      doc.fillColor(MUTED).font('Helvetica').fontSize(8);
-      doc.text('Second Floor, Nasuja Building 1-89/G/36, Shilpi Valley, Plot no 36,', textLeft, 44);
-      doc.text('Opposite Westin Hotel Madhapur, HITEC City, Hyderabad,', textLeft, 54);
-      doc.text('Telangana, India – 500081', textLeft, 64);
-      doc.text('Email: annie@myvirtualemployee.com.au', textLeft, 74);
-      doc.text('Contact: +91 74166 74188', textLeft, 84);
+      doc.fillColor(MUTED).font('Helvetica').fontSize(7.8);
+      doc.text('Second Floor, Nasuja Building 1-89/G/36, Shilpi Valley, Plot no 36,', textLeft, 42);
+      doc.text('Opposite Westin Hotel Madhapur, HITEC City, Hyderabad,', textLeft, 52);
+      doc.text('Telangana, India - 500081', textLeft, 62);
+      doc.text('Email: annie@myvirtualemployee.com.au', textLeft, 72);
+      doc.text('Contact: +91 74166 74188', textLeft, 82);
 
-      doc.roundedRect(right - 130, 48, 130, 26, 4).fill(NAVY);
+      doc.roundedRect(right - 125, 42, 125, 24, 4).fill(NAVY);
       doc
         .fillColor('white')
         .font('Helvetica-Bold')
-        .fontSize(11)
-        .text('SALARY PAYSLIP', right - 130, 57, { width: 130, align: 'center' });
-      doc.strokeColor(NAVY).lineWidth(1.5).moveTo(left, 100).lineTo(right, 100).stroke();
+        .fontSize(10.5)
+        .text('SALARY PAYSLIP', right - 125, 49, { width: 125, align: 'center' });
+      doc.strokeColor(NAVY).lineWidth(1.5).moveTo(left, 96).lineTo(right, 96).stroke();
 
-      sectionTitle('1. PAY & EMPLOYEE SUMMARY', 109);
-      const summaryY = 132;
-      const summaryRow = 23;
+      sectionTitle('1. PAY & EMPLOYEE SUMMARY', 104);
+      const summaryY = 124;
+      const summaryRow = 20;
       const cols = [93, 165, 93, 160];
       const summary = [
         [
@@ -209,64 +235,201 @@ const generatePayslipPDF = async (payslip, user) => {
           .stroke()
       );
 
-      const attendanceTitleY = 254;
+      // Section 2: Attendance & Leave Record
+      const attendanceTitleY = 232;
       sectionTitle('2. ATTENDANCE & LEAVE RECORD', attendanceTitleY);
-      const attendanceY = 277;
-      const attendanceCols = [104, 82, 82, 77, 86, 80];
-      const attendance = [
-        'Payable Days',
-        'Total Cycle Days',
-        'LOP Days',
-        'Paid Leave',
-        'Attendance Status',
-        'Leave Balance',
+      const summaryBarY = 251;
+      const summaryBarCols = [128, 128, 128, 127];
+      const summaryLabels = ['Payable Days', 'Total Cycle Days', 'LOP Days', 'Paid Leave Days'];
+      const paidLeaveDays = (monthLeaves || [])
+        .filter((l) => {
+          const lt = (leaveTypes || []).find(
+            (t) => (t.name || '').toLowerCase() === (l.leaveType || '').toLowerCase()
+          );
+          return lt ? lt.isPaid !== false : !l.leaveType?.toLowerCase().includes('unpaid');
+        })
+        .reduce((sum, l) => sum + (l.numberOfDays || 0), 0);
+      const summaryVals = [
+        String(payslip.daysWorked ?? 0),
+        String(payslip.totalDays ?? 0),
+        String(payslip.lopDays ?? 0),
+        String(paidLeaveDays ?? 0),
       ];
-      const attendanceValues = [
-        payslip.daysWorked,
-        payslip.totalDays,
-        payslip.lopDays,
-        Math.max(
-          0,
-          Number(payslip.daysWorked || 0) -
-            (Number(payslip.totalDays || 0) - Number(payslip.lopDays || 0))
-        ),
-        'Calculated',
-        '-',
-      ];
-      doc.strokeColor(BORDER).rect(left, attendanceY, width, 42).stroke();
-      let x = left;
-      attendance.forEach((label, i) => {
-        cellText(label, x, attendanceY, attendanceCols[i], 'left', true);
-        cellText(
-          attendanceValues[i],
-          x,
-          attendanceY + 20,
-          attendanceCols[i],
-          i === 5 ? 'right' : 'left',
-          i === 5
-        );
-        if (i)
-          doc
-            .moveTo(x, attendanceY)
-            .lineTo(x, attendanceY + 42)
-            .stroke();
-        x += attendanceCols[i];
-      });
-      line(attendanceY + 20);
 
-      const breakdownTitleY = 328;
+      doc.strokeColor(BORDER).rect(left, summaryBarY, width, 18).stroke();
+      let sx = left;
+      summaryLabels.forEach((label, i) => {
+        doc
+          .fillColor('#64748B')
+          .font('Helvetica-Bold')
+          .fontSize(7.5)
+          .text(`${label}: `, sx + 5, summaryBarY + 5, { lineBreak: false });
+        doc
+          .fillColor(i === 2 ? '#E11D48' : i === 3 ? '#059669' : NAVY)
+          .font('Helvetica-Bold')
+          .fontSize(7.5)
+          .text(summaryVals[i], sx + summaryBarCols[i] - 28, summaryBarY + 5, {
+            width: 24,
+            align: 'right',
+            lineBreak: false,
+          });
+        if (i) doc.moveTo(sx, summaryBarY).lineTo(sx, summaryBarY + 18).stroke();
+        sx += summaryBarCols[i];
+      });
+
+      const attTableY = summaryBarY + 22;
+      const attRowHeight = 15;
+      doc.rect(left, attTableY, width, attRowHeight).fill(NAVY);
+      const attHeaders = [
+        'Leave Type',
+        'Date',
+        'No of days',
+        'Hours Taken',
+        'Leave Category',
+        'Unit',
+        'Available Balance',
+      ];
+      const attCols = [85, 120, 42, 50, 65, 38, 111];
+      let ax = left;
+      attHeaders.forEach((h, i) => {
+        doc
+          .fillColor('white')
+          .font('Helvetica-Bold')
+          .fontSize(7.2)
+          .text(h, ax + 2, attTableY + 4, {
+            width: attCols[i] - 4,
+            align: i === 0 ? 'left' : i === 6 ? 'right' : 'center',
+            lineBreak: false,
+          });
+        ax += attCols[i];
+      });
+
+      let leaveRows = [];
+      if (monthLeaves && monthLeaves.length > 0) {
+        const groups = new Map();
+        monthLeaves.forEach((l) => {
+          const key = (l.leaveType || 'Leave').trim();
+          const existing = groups.get(key) || [];
+          existing.push(l);
+          groups.set(key, existing);
+        });
+
+        leaveRows = Array.from(groups.entries()).map(([typeName, reqs]) => {
+          const lt = (leaveTypes || []).find(
+            (t) => (t.name || '').toLowerCase() === typeName.toLowerCase()
+          );
+          const hrsRate = lt?.workingHoursPerDay || 8;
+          const isPaid = lt ? lt.isPaid !== false : !typeName.toLowerCase().includes('unpaid');
+
+          const totalDays = reqs.reduce((sum, r) => sum + (r.numberOfDays || 1), 0);
+          const totalHours = Number((totalDays * hrsRate).toFixed(2));
+
+          const sortedReqs = [...reqs].sort(
+            (a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
+          );
+
+          const dateTokens = [];
+          sortedReqs.forEach((r) => {
+            const sDate = new Date(r.startDate);
+            const eDate = new Date(r.endDate);
+            const startDay = sDate.getDate();
+            const endDay = eDate.getDate();
+
+            if (
+              !r.endDate ||
+              r.startDate === r.endDate ||
+              sDate.toDateString() === eDate.toDateString() ||
+              startDay === endDay
+            ) {
+              dateTokens.push(getOrdinal(startDay));
+            } else {
+              dateTokens.push(`${getOrdinal(startDay)} - ${getOrdinal(endDay)}`);
+            }
+          });
+
+          const dateStr = dateTokens.length > 0 ? dateTokens.join(', ') : '-';
+          const currBal = user.leaveBalance?.[typeName] ?? 0;
+
+          return [
+            typeName,
+            dateStr,
+            String(totalDays),
+            String(totalHours),
+            isPaid ? 'Paid Leave' : 'Unpaid / LOP',
+            'Days',
+            `${Number(Number(currBal).toFixed(2))} Days (${Number((currBal * hrsRate).toFixed(2))}h)`,
+          ];
+        });
+      } else if (leaveTypes && leaveTypes.length > 0) {
+        leaveRows = leaveTypes
+          .filter((t) => t.isPaid !== false)
+          .slice(0, 2)
+          .map((t) => {
+            const hrsRate = t.workingHoursPerDay || 8;
+            const currBal = user.leaveBalance?.[t.name] ?? 0;
+            return [
+              t.name,
+              '-',
+              '0',
+              '0',
+              t.isPaid !== false ? 'Paid Leave' : 'Unpaid / LOP',
+              'Days',
+              `${Number(Number(currBal).toFixed(2))} Days (${Number((currBal * hrsRate).toFixed(2))}h)`,
+            ];
+          });
+      } else {
+        leaveRows = [
+          [
+            payslip.lopDays > 0 ? 'Loss of Pay (LOP)' : 'Annual Leave',
+            '-',
+            String(payslip.lopDays > 0 ? payslip.lopDays : 0),
+            String(payslip.lopDays > 0 ? payslip.lopDays * 8 : 0),
+            payslip.lopDays > 0 ? 'Unpaid / LOP' : 'Paid Leave',
+            'Days',
+            '0 Days (0h)',
+          ],
+        ];
+      }
+
+      const attDataY = attTableY + attRowHeight;
+      const attRowCount = leaveRows.length;
+      doc.strokeColor(BORDER).rect(left, attDataY, width, attRowHeight * attRowCount).stroke();
+
+      ax = left;
+      attCols.slice(0, -1).forEach((col) => {
+        ax += col;
+        doc.moveTo(ax, attTableY).lineTo(ax, attDataY + attRowHeight * attRowCount).stroke();
+      });
+
+      leaveRows.forEach((row, rIdx) => {
+        let rx = left;
+        row.forEach((val, cIdx) => {
+          doc
+            .fillColor(NAVY)
+            .font(cIdx === 0 || cIdx === 6 ? 'Helvetica-Bold' : 'Helvetica')
+            .fontSize(7.2)
+            .text(val, rx + 2, attDataY + rIdx * attRowHeight + 4, {
+              width: attCols[cIdx] - 4,
+              align: cIdx === 0 ? 'left' : cIdx === 6 ? 'right' : 'center',
+              lineBreak: false,
+            });
+          rx += attCols[cIdx];
+        });
+        line(attDataY + (rIdx + 1) * attRowHeight);
+      });
+
+      // Section 3: Salary Breakdown
+      const breakdownTitleY = attDataY + attRowHeight * attRowCount + 9;
       sectionTitle(
         '3. MONTHLY SALARY BREAKDOWN & FINANCIAL YEAR YTD (01 APR - 31 MAR)',
         breakdownTitleY
       );
-      const tableY = 351;
+      const tableY = breakdownTitleY + 20;
       const tableCols = [111, 72, 72, 111, 72, 73];
       const earnings = (payslip.items || []).filter((item) => item.type === 'ALLOWANCE');
       const deductions = (payslip.items || []).filter((item) => item.type === 'DEDUCTION');
       const rows = Math.max(5, earnings.length, deductions.length);
-      // A compact row keeps common configurations on the same single-page layout
-      // as the approved payslip reference.
-      const rowHeight = 16;
+      const rowHeight = 15;
       doc.rect(left, tableY, width, rowHeight).fill(NAVY);
       const headers = [
         'Earnings',
@@ -276,13 +439,13 @@ const generatePayslipPDF = async (payslip, user) => {
         `Current (${currencySymbol})`,
         `YTD (${currencySymbol})`,
       ];
-      x = left;
+      let x = left;
       headers.forEach((header, i) => {
         doc
           .fillColor('white')
           .font('Helvetica-Bold')
-          .fontSize(7.6)
-          .text(header, x + 6, tableY + 6, {
+          .fontSize(7.5)
+          .text(header, x + 6, tableY + 4, {
             width: tableCols[i] - 12,
             align: i % 3 ? 'right' : 'left',
           });
@@ -334,33 +497,33 @@ const generatePayslipPDF = async (payslip, user) => {
         x += tableCols[i];
       });
 
-      const netY = totalY + rowHeight + 10;
-      doc.roundedRect(left, netY, width, 49, 5).fill(NAVY);
+      const netY = totalY + rowHeight + 8;
+      doc.roundedRect(left, netY, width, 44, 4).fill(NAVY);
       doc
         .fillColor('white')
         .font('Helvetica-Bold')
-        .fontSize(12)
-        .text('NET SALARY PAYABLE (A - B)', left + 12, netY + 13);
+        .fontSize(11)
+        .text('NET SALARY PAYABLE (A - B)', left + 12, netY + 11);
       doc
         .font('Helvetica')
-        .fontSize(8.5)
+        .fontSize(8)
         .text(
           `Amount in Words: ${currencyName} ${numberToWords(payslip.netPay)} Only`,
           left + 12,
-          netY + 31
+          netY + 28
         );
       doc
         .font('Helvetica-Bold')
-        .fontSize(17)
-        .text(money(payslip.netPay, currencySymbol), right - 150, netY + 14, {
+        .fontSize(15)
+        .text(money(payslip.netPay, currencySymbol), right - 150, netY + 13, {
           width: 136,
           align: 'right',
         });
 
-      const ytdTitleY = netY + 60;
+      const ytdTitleY = netY + 52;
       sectionTitle('4. YEAR TO DATE (YTD) SUMMARY - FINANCIAL YEAR (01 APR - 31 MAR)', ytdTitleY);
-      const ytdY = ytdTitleY + 24;
-      doc.roundedRect(left, ytdY, width, 69, 4).strokeColor('#AFC4DD').lineWidth(0.8).stroke();
+      const ytdY = ytdTitleY + 20;
+      doc.roundedRect(left, ytdY, width, 60, 4).strokeColor('#AFC4DD').lineWidth(0.8).stroke();
       const monthsElapsed = Math.max(
         1,
         Math.min(12, moment(periodEnd).diff(moment(fy.start), 'months') + 1)
@@ -392,7 +555,7 @@ const generatePayslipPDF = async (payslip, user) => {
           cellText(
             val,
             currentX,
-            ytdY + i * 20 + 4,
+            ytdY + i * 18 + 2,
             ytdCols[j],
             j === 3 ? 'right' : 'left',
             j === 0 || j === 2 || j === 3
@@ -400,7 +563,7 @@ const generatePayslipPDF = async (payslip, user) => {
           currentX += ytdCols[j];
         });
       });
-      const signatureY = ytdY + 94;
+      const signatureY = ytdY + 80;
       doc
         .strokeColor('#8DA4BD')
         .dash(3, { space: 3 })
@@ -420,8 +583,8 @@ const generatePayslipPDF = async (payslip, user) => {
           doc.image(
             Buffer.from(signatureSetting.value.replace(/^data:image\/\w+;base64,/, ''), 'base64'),
             right - 130,
-            signatureY - 30,
-            { fit: [110, 25] }
+            signatureY - 26,
+            { fit: [110, 22] }
           );
         } catch (error) {
           /* The signature is optional. */
@@ -430,24 +593,24 @@ const generatePayslipPDF = async (payslip, user) => {
       doc
         .fillColor(MUTED)
         .font('Helvetica')
-        .fontSize(8)
-        .text('Employee Signature', left, signatureY + 6);
-      doc.text('Authorized Signatory / HR Department', right - 190, signatureY + 6, {
+        .fontSize(7.8)
+        .text('Employee Signature', left, signatureY + 5);
+      doc.text('Authorized Signatory / HR Department', right - 190, signatureY + 5, {
         width: 190,
         align: 'right',
       });
       doc
         .strokeColor(BORDER)
-        .moveTo(left, signatureY + 27)
-        .lineTo(right, signatureY + 27)
+        .moveTo(left, signatureY + 23)
+        .lineTo(right, signatureY + 23)
         .stroke();
       doc
         .fillColor('#8294AB')
-        .fontSize(6.8)
+        .fontSize(6.5)
         .text(
           'This is a computer-generated salary document and requires no signature when electronically verified. | AA SERVICES',
           left,
-          signatureY + 33,
+          signatureY + 28,
           { width, align: 'center' }
         );
       doc.end();
