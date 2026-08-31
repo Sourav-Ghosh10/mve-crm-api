@@ -492,19 +492,18 @@ const leaveController = {
         const balances = activeLeaveTypes.map(lt => {
             const canonicalName = lt.name;
             const used = usedMap[canonicalName] || 0;
-            let totalAllocated = lt.defaultAmount ?? "";
+            let totalAllocated = typeof lt.defaultAmount === 'number' ? lt.defaultAmount : "";
 
-            // For consistency: Available = Allocated - Used
-            // This ignores manual balance adjustments in favor of a clean "Annual Allowance" view
-            // If manual adjustment support is critically needed, we'd need a 'manualCorrection' field
             let currentBalance = 0;
             if (user.leaveBalance && user.leaveBalance.has(canonicalName)) {
-                totalAllocated = user.leaveBalance.get(canonicalName);
-                currentBalance = Math.max(0, totalAllocated - used);
+                currentBalance = user.leaveBalance.get(canonicalName);
+                if (typeof totalAllocated !== 'number') {
+                    totalAllocated = currentBalance + used;
+                }
             } else if (lt.isPaid && typeof totalAllocated === 'number') {
                 currentBalance = Math.max(0, totalAllocated - used);
             } else {
-                currentBalance = ""; 
+                currentBalance = lt.isPaid ? 0 : ""; 
                 if (!lt.isPaid) {
                     totalAllocated = "";
                 }
@@ -519,9 +518,23 @@ const leaveController = {
                 totalAllocated: totalAllocated,
                 isPaid: lt.isPaid,
                 accrualType: lt.accrualType,
-                workingHoursPerDay: lt.workingHoursPerDay
+                workingHoursPerDay: lt.workingHoursPerDay || 8
             };
         });
+
+        // Ensure 'unpaid' is handled if not explicitly in LeaveTypes
+        if (!balances.find(b => !b.isPaid || (b.code && ['UNPAID', 'LWP'].includes(b.code.toUpperCase())) || (b.name && b.name.toLowerCase().includes('unpaid')))) {
+            const usedUnpaid = usedMap['unpaid'] || usedMap['Unpaid Leave'] || 0;
+            balances.push({
+                name: 'Unpaid Leave',
+                code: 'UNPAID',
+                currentBalance: "",
+                used: usedUnpaid,
+                totalAllocated: "",
+                isPaid: false,
+                workingHoursPerDay: 8
+            });
+        }
 
         // Ensure 'unpaid' is handled if not explicitly in LeaveTypes
         // if (!balances.find(b => b.code.toUpperCase() === 'UNPAID')) {
@@ -815,14 +828,14 @@ const leaveController = {
             const used = usedMap[canonicalName] || 0;
             const total = lt.defaultAmount;
 
-            // Calculate balance as Total - Used
             let currentBal = 0;
             if (user.leaveBalance && user.leaveBalance.has(canonicalName)) {
-                const userAllocated = user.leaveBalance.get(canonicalName);
-                currentBal = Math.max(0, userAllocated - used);
-                available += currentBal;
+                currentBal = user.leaveBalance.get(canonicalName);
+                if (lt.isPaid) {
+                    available += currentBal;
+                }
                 totalUsed += used;
-                totalAllocatedSum += userAllocated;
+                totalAllocatedSum += (typeof total === 'number' ? total : (currentBal + used));
             } else if (lt.isPaid && typeof total === 'number') {
                 currentBal = Math.max(0, total - used);
                 available += currentBal;
@@ -840,7 +853,7 @@ const leaveController = {
                 total: total,
                 isPaid: lt.isPaid,
                 accrualType: lt.accrualType,
-                workingHoursPerDay: lt.workingHoursPerDay
+                workingHoursPerDay: lt.workingHoursPerDay || 8
             };
         });
 

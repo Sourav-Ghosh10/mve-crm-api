@@ -45,6 +45,7 @@ const createUserSchema = Joi.object({
     email: Joi.string().email().lowercase().trim().required(),
     phone: Joi.string().pattern(/^[+]?[\d\s-]{10,15}$/),
     dateOfBirth: Joi.date().max('now').iso(),
+    panNumber: Joi.string().trim().uppercase().max(20).allow('', null),
     address: Joi.object({
       street: Joi.string().max(200),
       city: Joi.string().max(100),

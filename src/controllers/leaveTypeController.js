@@ -82,62 +82,21 @@ const leaveTypeController = {
         // We'll apply pagination in memory after processing
         let leaveTypes = await LeaveType.find(query).sort({ createdAt: -1 });
 
-        // 2. Dynamic Unpaid Leave Logic
+        // 2. Ensure Unpaid Leave is always available to employees
         if (req.user) {
-            // Calculate Total Paid Leave Balance for APPLICABLE types
-            const applicablePaidTypes = await LeaveType.find({
-                isPaid: true,
-                isActive: true,
-                applicableDepartments: { $in: ['all', userDept || ''] },
-                applicableDesignations: { $in: ['all', userDesignation || ''] }
-            }).select('name code defaultAmount');
+            const isUnpaid = (lt) => lt.isPaid === false || (lt.code && ['LWP', 'UNPAID'].includes(lt.code.toUpperCase())) || (lt.name && /unpaid|lwp|loss of pay/i.test(lt.name));
+            const hasUnpaid = leaveTypes.some(lt => isUnpaid(lt));
 
-            // Total Allocated
-            const totalAllocated = applicablePaidTypes.reduce((sum, lt) => sum + (lt.defaultAmount || 0), 0);
-
-            // Total Taken/Pending (from Leave table)
-            const typeNames = applicablePaidTypes.map(lt => lt.name);
-            const typeCodes = applicablePaidTypes.map(lt => lt.code);
-            const allIdentifierPairs = [...typeNames, ...typeCodes];
-
-            const takenLeaves = await Leave.find({
-                employeeId: req.user._id,
-                leaveType: { $in: allIdentifierPairs },
-                status: { $in: ['pending', 'approved'] }
-            });
-
-            const totalTaken = takenLeaves.reduce((sum, l) => sum + (l.numberOfDays || 0), 0);
-            const totalPaidBalance = totalAllocated - totalTaken;
-
-            // console.log('Total Allocated:', totalAllocated, 'Total Taken/Pending:', totalTaken, 'Remaining:', totalPaidBalance);
-
-            // Logic:
-            // If Balance > 0 -> Hide Unpaid Leave
-            // If Balance == 0 -> Ensure Unpaid Leave is visible (Inject if needed)
-
-            const unpaidPattern = /unpaid|lwp|loss of pay/i;
-            const isUnpaid = (lt) => lt.isPaid === false || (lt.code && ['LWP', 'UNPAID'].includes(lt.code.toUpperCase()));
-            // console.log('Total Paid Balance:', totalPaidBalance);
-            if (totalPaidBalance > 0) {
-                // Hide Unpaid Leave
-                leaveTypes = leaveTypes.filter(lt => !isUnpaid(lt));
-            } else {
-                // Balance is 0 (or less), User needs Unpaid Leave
-                // Check if Unpaid Leave is already in the list
-                const hasUnpaid = leaveTypes.some(lt => isUnpaid(lt));
-
-                if (!hasUnpaid) {
-                    // Fetch Unpaid Leave from DB
-                    const unpaidLeaveType = await LeaveType.findOne({ code: 'LWP', isActive: true });
-                    if (unpaidLeaveType) {
-                        leaveTypes.push(unpaidLeaveType);
-                    }
-                }
-            }
-
-            // Special Case: If list is empty after strict filtering
-            if (leaveTypes.length === 0) {
-                const unpaidLeaveType = await LeaveType.findOne({ code: 'LWP', isActive: true });
+            if (!hasUnpaid) {
+                const unpaidLeaveType = await LeaveType.findOne({
+                    $or: [
+                        { code: 'UNPAID' },
+                        { code: 'LWP' },
+                        { isPaid: false },
+                        { name: /unpaid/i }
+                    ],
+                    isActive: true
+                });
                 if (unpaidLeaveType) {
                     leaveTypes.push(unpaidLeaveType);
                 }

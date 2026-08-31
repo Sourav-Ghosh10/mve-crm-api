@@ -51,6 +51,11 @@ const userSchema = new mongoose.Schema(
         trim: true,
       },
       dateOfBirth: Date,
+      panNumber: {
+        type: String,
+        trim: true,
+        uppercase: true,
+      },
       address: {
         street: String,
         city: String,
