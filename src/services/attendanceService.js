@@ -609,7 +609,10 @@ const attendanceService = {
     },
 
     getAllAttendance: async (query) => {
-        const { page = 1, limit = 20, employeeId, startDate, endDate, status, search, department, designation, isClockedIn, isOnBreak, adminUserId } = query;
+        const employeeId = query.employeeId || query.userId;
+        const startDate = query.startDate || query.start;
+        const endDate = query.endDate || query.end;
+        const { page = 1, limit = 20, status, search, department, designation, isClockedIn, isOnBreak, adminUserId } = query;
         const skip = (page - 1) * limit;
 
         const filter = {};
