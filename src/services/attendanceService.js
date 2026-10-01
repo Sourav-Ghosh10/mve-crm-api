@@ -1,4 +1,5 @@
 const Attendance = require('../models/Attendance');
+const BreakType = require('../models/BreakType');
 const SystemSettings = require('../models/SystemSettings');
 const Schedule = require('../models/Schedule');
 const Holiday = require('../models/Holiday');
@@ -120,6 +121,9 @@ const enrichAttendanceRecord = (record, timezone = 'Asia/Kolkata') => {
     const flooredNetMins = Math.floor(netMs / 60000);
     record.totalHours = Number((flooredNetMins / 60).toFixed(2));
     record.totalDurationString = formatDuration(netMs);
+    record.netDurationString = record.totalDurationString;
+    record.durationMs = netMs;
+    record.grossDurationMs = totalGrossMs;
     record.totalBreakTime = Number((totalBreakMs / (1000 * 60)).toFixed(2));
     record.totalBreakDurationString = formatDuration(totalBreakMs);
 
@@ -405,7 +409,7 @@ const attendanceService = {
 
         attendance.breaks.push({ 
             startTime: getRealTime(),
-            breakType: breakTypeId 
+            breakType: breakTypeId ? breakTypeId : undefined
         });
         await attendance.save();
 
@@ -585,7 +589,8 @@ const attendanceService = {
 
         const enriched = enrichAttendanceRecord(attendance, timezone);
         const lastSession = enriched.sessions[enriched.sessions.length - 1];
-        const lastBreak = enriched.breaks[enriched.breaks.length - 1];
+        const activeBreak = enriched.breaks && enriched.breaks.find(b => !b.endTime);
+        const lastBreak = activeBreak || (enriched.breaks && enriched.breaks[enriched.breaks.length - 1]);
         const isClockedIn = !!(lastSession && (!lastSession.checkOut || !lastSession.checkOut.time));
         const isOnBreak = !!(lastBreak && !lastBreak.endTime);
 
@@ -600,7 +605,7 @@ const attendanceService = {
             totalBreakDurationString: enriched.totalBreakDurationString,
             totalHours: enriched.totalHours,
             totalDurationString: enriched.totalDurationString,
-            status: enriched.status,
+            status: isOnBreak ? 'on_break' : enriched.status,
             remarks: enriched.remarks,
             timestamp: getRealTime(),
             ...monthlyOffStats,
@@ -733,6 +738,7 @@ const attendanceService = {
 
         return {
             attendance,
+            attendances: attendance,
             pagination: {
                 total,
                 page: Number(page),
@@ -752,8 +758,16 @@ const attendanceService = {
             filter.date = {};
             const tzUser = await User.findById(userId).select('employment.timezone').lean();
             const TZ = tzUser?.employment?.timezone || 'Asia/Kolkata';
-            if (startDate) filter.date.$gte = moment.tz(startDate.length === 10 ? startDate : moment(startDate).tz(TZ).format('YYYY-MM-DD'), 'YYYY-MM-DD', TZ).startOf('day').toDate();
-            if (endDate) filter.date.$lte = moment.tz(endDate.length === 10 ? endDate : moment(endDate).tz(TZ).format('YYYY-MM-DD'), 'YYYY-MM-DD', TZ).endOf('day').toDate();
+            if (startDate) {
+                const startLocal = moment.tz(startDate.length === 10 ? startDate : moment(startDate).tz(TZ).format('YYYY-MM-DD'), 'YYYY-MM-DD', TZ).startOf('day').toDate();
+                const startUtc = moment.utc(startDate.length === 10 ? startDate : moment(startDate).utc().format('YYYY-MM-DD'), 'YYYY-MM-DD').startOf('day').toDate();
+                filter.date.$gte = startLocal < startUtc ? startLocal : startUtc;
+            }
+            if (endDate) {
+                const endLocal = moment.tz(endDate.length === 10 ? endDate : moment(endDate).tz(TZ).format('YYYY-MM-DD'), 'YYYY-MM-DD', TZ).endOf('day').toDate();
+                const endUtc = moment.utc(endDate.length === 10 ? endDate : moment(endDate).utc().format('YYYY-MM-DD'), 'YYYY-MM-DD').endOf('day').toDate();
+                filter.date.$lte = endLocal > endUtc ? endLocal : endUtc;
+            }
         }
 
         const attendanceRecords = await Attendance.find(filter)
@@ -782,6 +796,7 @@ const attendanceService = {
 
             // Check holiday
             const dateStr = moment(record.date).tz(userTimezone).format('YYYY-MM-DD');
+            record.dateStr = dateStr;
             record.isHoliday = holidayDates.includes(dateStr) && (record.employeeId ? record.employeeId.isHolidayApplicable : true);
             if (record.isHoliday) {
                 const holiday = holidays.find(h => moment(h.date).format('YYYY-MM-DD') === dateStr);
@@ -796,6 +811,7 @@ const attendanceService = {
 
         return {
             attendance,
+            attendances: attendance,
             pagination: {
                 total,
                 page: Number(page),
