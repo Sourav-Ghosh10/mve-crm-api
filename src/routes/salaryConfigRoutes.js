@@ -4,7 +4,8 @@ const { authenticate } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { 
   createSalaryConfigSchema, 
-  updateSalaryConfigSchema 
+  updateSalaryConfigSchema,
+  createSalaryRevisionSchema,
 } = require('../validators/payrollValidator');
 const { idParamSchema } = require('../validators/commonValidator');
 
@@ -86,6 +87,12 @@ router.use(authenticate);
 router.get('/', salaryConfigController.getConfigs);
 router.post('/', validate(createSalaryConfigSchema), salaryConfigController.createConfig);
 
+// Specific routes before /:id
+router.get('/revisions/:employeeId', salaryConfigController.getRevisions);
+router.post('/revisions', validate(createSalaryRevisionSchema), salaryConfigController.createRevision);
+router.delete('/revisions/:id', validate(idParamSchema, 'params'), salaryConfigController.cancelRevision);
+router.get('/employee/:employeeId', salaryConfigController.getLatestConfigByEmployee);
+
 /**
  * @swagger
  * /api/payroll/salary-configs/{id}:
@@ -140,25 +147,5 @@ router.post('/', validate(createSalaryConfigSchema), salaryConfigController.crea
 router.get('/:id', validate(idParamSchema, 'params'), salaryConfigController.getConfigById);
 router.put('/:id', validate(idParamSchema, 'params'), validate(updateSalaryConfigSchema), salaryConfigController.updateConfig);
 router.delete('/:id', validate(idParamSchema, 'params'), salaryConfigController.deleteConfig);
-
-/**
- * @swagger
- * /api/payroll/salary-configs/employee/{employeeId}:
- *   get:
- *     summary: Get latest active config for an employee
- *     tags: [Salary Config]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: employeeId
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Active configuration details
- */
-router.get('/employee/:employeeId', salaryConfigController.getLatestConfigByEmployee);
 
 module.exports = router;

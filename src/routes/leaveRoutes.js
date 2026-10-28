@@ -170,6 +170,7 @@ router.get('/calculate-days', catchAsync(leaveController.calculateLeaveDuration)
  *       200:
  *         description: Opening balance added successfully
  */
+router.get('/opening-balance-preview', catchAsync(leaveController.getOpeningBalancePreview));
 router.post('/opening-balance', catchAsync(leaveController.addOpeningBalance));
 
 /**

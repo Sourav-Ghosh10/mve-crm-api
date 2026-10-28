@@ -22,6 +22,7 @@ const salaryConfigSchema = new mongoose.Schema(
     basicSalary: { type: Number, min: 0 }, // Legacy support
     effectiveFrom: { type: Date, required: true },
     isActive: { type: Boolean, default: true, index: true },
+    revisionReason: { type: String, default: '' },
     items: [salaryConfigItemSchema],
   },
   { timestamps: true }

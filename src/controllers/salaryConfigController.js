@@ -1,4 +1,5 @@
 const salaryConfigService = require('../services/salaryConfigService');
+const salaryRevisionService = require('../services/salaryRevisionService');
 
 const salaryConfigController = {
   getConfigs: async (req, res, next) => {
@@ -53,7 +54,7 @@ const salaryConfigController = {
 
   createConfig: async (req, res, next) => {
     try {
-      const config = await salaryConfigService.createConfig(req.body);
+      const config = await salaryConfigService.createConfig(req.body, req.user?._id);
       res.status(201).json({
         success: true,
         message: 'Salary configuration created successfully',
@@ -66,7 +67,7 @@ const salaryConfigController = {
 
   updateConfig: async (req, res, next) => {
     try {
-      const config = await salaryConfigService.updateConfig(req.params.id, req.body);
+      const config = await salaryConfigService.updateConfig(req.params.id, req.body, req.user?._id);
       res.status(200).json({
         success: true,
         message: 'Salary configuration updated successfully',
@@ -83,6 +84,44 @@ const salaryConfigController = {
       res.status(200).json({
         success: true,
         message: 'Salary configuration deleted successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  // Salary Revision Endpoints
+  getRevisions: async (req, res, next) => {
+    try {
+      const revisions = await salaryRevisionService.getRevisionsByEmployee(req.params.employeeId);
+      res.status(200).json({
+        success: true,
+        data: revisions,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  createRevision: async (req, res, next) => {
+    try {
+      const revision = await salaryRevisionService.createRevision(req.body, req.user?._id);
+      res.status(201).json({
+        success: true,
+        message: 'Salary revision created successfully',
+        data: revision,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  cancelRevision: async (req, res, next) => {
+    try {
+      const result = await salaryRevisionService.cancelRevision(req.params.id);
+      res.status(200).json({
+        success: true,
+        message: result.message,
       });
     } catch (error) {
       next(error);

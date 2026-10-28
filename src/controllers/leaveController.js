@@ -10,6 +10,8 @@ const { AppError, BadRequestError, NotFoundError, ForbiddenError } = require('..
 const catchAsync = require('../utils/catchAsync');
 const { calculateDaysBetween } = require('../utils/dateUtils');
 const mongoose = require('mongoose');
+const Attendance = require('../models/Attendance');
+const moment = require('moment-timezone');
 const WORKING_HOURS_PER_DAY = 8;
 
 // Calculate an early leave's duration from its selected departure time through
@@ -937,13 +939,239 @@ const leaveController = {
         });
     }),
 
+    // Helper function for calculating catch-up accrual between recordedDate and uploadDate
+    // Supports dryRun: true for real-time dynamic preview without altering database
+    calculateCatchUpAccrual: async ({
+        employeeId,
+        user,
+        matchedLeaveType,
+        recMoment,
+        uploadMoment,
+        dryRun = true,
+        openingLedgerId = null,
+        createdBy = null
+    }) => {
+        const hoursPerDay = matchedLeaveType.workingHoursPerDay || 8;
+        const fromDateStr = recMoment.format('YYYY-MM-DD');
+        const toDateStr = uploadMoment.format('YYYY-MM-DD');
+
+        // If date is same or future, no accrual to calculate
+        if (recMoment.isSame(uploadMoment) || recMoment.isAfter(uploadMoment)) {
+            return {
+                isSameDate: true,
+                accruedDays: 0,
+                accruedHours: 0,
+                workingDays: 0,
+                eligibleHours: 0,
+                approvedUsed: 0,
+                fromDate: fromDateStr,
+                toDate: toDateStr
+            };
+        }
+
+        let totalCatchUpAccrued = 0;
+        let workingDays = 0;
+        let totalEligibleHours = 0;
+        let curr = recMoment.clone().add(1, 'day');
+
+        while (curr.isSameOrBefore(uploadMoment)) {
+            const dayStart = curr.clone().startOf('day').toDate();
+            const dayEnd = curr.clone().endOf('day').toDate();
+            const dateStr = curr.format('YYYY-MM-DD');
+
+            // Check if an ACCRUAL ledger record already exists for this day (either catch-up or daily cron)
+            const existingAccrual = await LeaveLedger.findOne({
+                employee: employeeId,
+                leaveType: matchedLeaveType._id,
+                transactionType: 'ACCRUAL',
+                effectiveDate: { $gte: dayStart, $lte: dayEnd }
+            });
+
+            if (existingAccrual) {
+                totalCatchUpAccrued += existingAccrual.amount;
+                workingDays += 1;
+                totalEligibleHours += hoursPerDay;
+            } else {
+                // Check attendance for this date
+                const attendance = await Attendance.findOne({
+                    employeeId: user._id,
+                    date: { $gte: dayStart, $lte: dayEnd }
+                });
+
+                let eligibleHours = 0;
+
+                if (attendance) {
+                    if (attendance.status === 'weekend' || attendance.status === 'holiday') {
+                        eligibleHours = attendance.totalHours || 0;
+                    } else if (attendance.status === 'absent') {
+                        eligibleHours = 0;
+                    } else if (attendance.totalHours > 0) {
+                        eligibleHours = attendance.totalHours;
+                    } else if (attendance.status === 'present') {
+                        eligibleHours = hoursPerDay;
+                    } else {
+                        eligibleHours = attendance.totalHours || 0;
+                    }
+                } else {
+                    // No attendance logged: check weekly off and holidays
+                    const dayName = curr.format('dddd');
+                    const weeklyOff = user.employment?.workingHours?.weeklyOff;
+                    const isWeeklyOff = Array.isArray(weeklyOff) && weeklyOff.length > 0
+                        ? weeklyOff.some(w => w.toLowerCase() === dayName.toLowerCase())
+                        : (curr.day() === 0 || curr.day() === 6); // Sunday or Saturday
+
+                    const isHoliday = await Holiday.exists({
+                        date: { $gte: dayStart, $lte: dayEnd },
+                        isActive: true
+                    });
+
+                    if (!isWeeklyOff && !isHoliday) {
+                        eligibleHours = hoursPerDay;
+                    } else {
+                        eligibleHours = 0;
+                    }
+                }
+
+                if (eligibleHours > 0) {
+                    workingDays += 1;
+                    totalEligibleHours += eligibleHours;
+                }
+
+                // Calculate earned leave according to leave policy
+                let dayEarned = 0;
+                if (matchedLeaveType.accrualType === 'hourly') {
+                    const accrualRate = matchedLeaveType.hourlyAccrualRate || 0;
+                    dayEarned = eligibleHours * accrualRate;
+                } else {
+                    // Fixed accrual
+                    if (matchedLeaveType.hourlyAccrualRate > 0) {
+                        dayEarned = eligibleHours * matchedLeaveType.hourlyAccrualRate;
+                    } else if (matchedLeaveType.annualEntitlement > 0) {
+                        dayEarned = eligibleHours > 0 ? (matchedLeaveType.annualEntitlement / 260) : 0;
+                    } else if (matchedLeaveType.defaultAmount > 0) {
+                        dayEarned = eligibleHours > 0 ? (matchedLeaveType.defaultAmount / 260) : 0;
+                    }
+                }
+
+                const finalAmount = parseFloat(dayEarned.toFixed(4));
+                if (finalAmount > 0) {
+                    if (!dryRun && openingLedgerId) {
+                        await LeaveLedger.create({
+                            employee: employeeId,
+                            leaveType: matchedLeaveType._id,
+                            transactionType: 'ACCRUAL',
+                            amount: finalAmount,
+                            effectiveDate: dayStart,
+                            description: `Daily accrual for ${eligibleHours}h on ${dateStr} (catch-up from opening balance)`,
+                            referenceId: openingLedgerId,
+                            createdBy
+                        });
+                    }
+                    totalCatchUpAccrued += finalAmount;
+                }
+            }
+
+            curr.add(1, 'day');
+        }
+
+        // Deduct approved leaves taken between recordedDate and uploadDate (if any)
+        const approvedLeaves = await Leave.find({
+            employeeId: user._id,
+            status: 'approved',
+            startDate: { $gte: recMoment.toDate(), $lte: uploadMoment.clone().endOf('day').toDate() }
+        });
+
+        let approvedUsed = 0;
+        const canonicalName = matchedLeaveType.name;
+        approvedLeaves.forEach(l => {
+            const rawType = (l.leaveType || '').toLowerCase();
+            if (
+                rawType === (canonicalName || '').toLowerCase() ||
+                rawType === (matchedLeaveType.code || '').toLowerCase()
+            ) {
+                approvedUsed += (l.numberOfDays || 0);
+            }
+        });
+
+        const accruedDays = parseFloat(totalCatchUpAccrued.toFixed(4));
+        const accruedHours = parseFloat((accruedDays * hoursPerDay).toFixed(2));
+
+        return {
+            isSameDate: false,
+            accruedDays,
+            accruedHours,
+            workingDays,
+            eligibleHours: totalEligibleHours,
+            approvedUsed,
+            fromDate: fromDateStr,
+            toDate: toDateStr
+        };
+    },
+
+    // Dynamic Preview of Eligible Leave Accrued Between Recorded Date and Today
+    getOpeningBalancePreview: catchAsync(async (req, res) => {
+        const { employeeId, recordedDate } = req.query;
+        const leaveTypeId = req.query.leaveTypeId || req.query.leaveType;
+
+        if (!employeeId || !leaveTypeId || !recordedDate) {
+            throw new BadRequestError('employeeId, leaveTypeId, and recordedDate are required query parameters');
+        }
+
+        const user = await User.findById(employeeId);
+        if (!user) throw new NotFoundError('User not found');
+
+        const activeLeaveTypes = await LeaveType.find({ isActive: true });
+        const lowerLeaveTypeId = leaveTypeId.toString().toLowerCase();
+
+        let matchedLeaveType = activeLeaveTypes.find(lt =>
+            lt._id.toString() === leaveTypeId ||
+            (lt.code && lt.code.toLowerCase() === lowerLeaveTypeId) ||
+            (lt.name && lt.name.toLowerCase() === lowerLeaveTypeId)
+        );
+
+        if (!matchedLeaveType) {
+            throw new BadRequestError('Invalid leave type');
+        }
+
+        const userTz = user.employment?.timezone || 'Asia/Kolkata';
+        const uploadMoment = moment.tz(new Date(), userTz).startOf('day');
+        let recMoment = moment.tz(recordedDate, userTz).startOf('day');
+
+        if (!recMoment.isValid()) {
+            throw new BadRequestError('Invalid recordedDate');
+        }
+
+        const accrualResult = await leaveController.calculateCatchUpAccrual({
+            employeeId,
+            user,
+            matchedLeaveType,
+            recMoment,
+            uploadMoment,
+            dryRun: true
+        });
+
+        res.json({
+            status: 'success',
+            data: {
+                employeeId,
+                leaveType: matchedLeaveType.name,
+                ...accrualResult
+            }
+        });
+    }),
+
     // Add Opening Balance
     addOpeningBalance: catchAsync(async (req, res) => {
-        const { employeeId, amount, description } = req.body;
+        const { employeeId, amount, description, recordedDate } = req.body;
         const leaveTypeId = req.body.leaveTypeId || req.body.leaveType;
         
         if (!leaveTypeId) {
             throw new BadRequestError('Leave type ID is required');
+        }
+
+        const numericAmount = parseFloat(amount);
+        if (isNaN(numericAmount) || numericAmount < 0) {
+            throw new BadRequestError('Amount must be a valid positive number or 0');
         }
         
         const user = await User.findById(employeeId);
@@ -963,26 +1191,121 @@ const leaveController = {
         }
 
         const canonicalName = matchedLeaveType.name;
+        const userTz = user.employment?.timezone || 'Asia/Kolkata';
 
-        // Save to LeaveLedger
-        await LeaveLedger.create({
+        // Parse recorded date (when balance was recorded in previous HRM)
+        // and upload date (current date)
+        const uploadMoment = moment.tz(new Date(), userTz).startOf('day');
+        let recMoment = recordedDate 
+            ? moment.tz(recordedDate, userTz).startOf('day') 
+            : uploadMoment.clone();
+
+        if (!recMoment.isValid() || recMoment.isAfter(uploadMoment)) {
+            recMoment = uploadMoment.clone();
+        }
+
+        // 1. Maintain a single OPENING_BALANCE ledger record to prevent duplicate baselines
+        const existingOpenings = await LeaveLedger.find({
             employee: employeeId,
             leaveType: matchedLeaveType._id,
-            transactionType: 'OPENING_BALANCE',
-            amount,
-            description: description || 'Opening Balance',
-            effectiveDate: new Date(),
+            transactionType: 'OPENING_BALANCE'
+        }).sort({ createdAt: -1 });
+
+        let openingLedger;
+        if (existingOpenings.length > 0) {
+            openingLedger = existingOpenings[0];
+            openingLedger.amount = numericAmount;
+            openingLedger.effectiveDate = recMoment.toDate();
+            openingLedger.description = description || `Opening balance recorded as of ${recMoment.format('YYYY-MM-DD')}`;
+            openingLedger.createdBy = req.user._id;
+            await openingLedger.save();
+
+            // Clean up any historical duplicate opening balance records if any existed
+            if (existingOpenings.length > 1) {
+                const dupIds = existingOpenings.slice(1).map(d => d._id);
+                await LeaveLedger.deleteMany({ _id: { $in: dupIds } });
+            }
+        } else {
+            openingLedger = await LeaveLedger.create({
+                employee: employeeId,
+                leaveType: matchedLeaveType._id,
+                transactionType: 'OPENING_BALANCE',
+                amount: numericAmount,
+                effectiveDate: recMoment.toDate(),
+                description: description || `Opening balance recorded as of ${recMoment.format('YYYY-MM-DD')}`,
+                createdBy: req.user._id
+            });
+        }
+
+        // 2. Clean up any previous catch-up ACCRUAL entries tied to this opening balance that fall on or before new recordedDate
+        await LeaveLedger.deleteMany({
+            employee: employeeId,
+            leaveType: matchedLeaveType._id,
+            transactionType: 'ACCRUAL',
+            referenceId: openingLedger._id,
+            effectiveDate: { $lte: recMoment.clone().endOf('day').toDate() }
+        });
+
+        // Also clean up any catch-up accruals that might fall after uploadMoment
+        await LeaveLedger.deleteMany({
+            employee: employeeId,
+            leaveType: matchedLeaveType._id,
+            transactionType: 'ACCRUAL',
+            referenceId: openingLedger._id,
+            effectiveDate: { $gt: uploadMoment.clone().endOf('day').toDate() }
+        });
+
+        // 3. Automatically calculate and add eligible leave accrued between recordedDate and uploadDate
+        const accrualResult = await leaveController.calculateCatchUpAccrual({
+            employeeId,
+            user,
+            matchedLeaveType,
+            recMoment,
+            uploadMoment,
+            dryRun: false,
+            openingLedgerId: openingLedger._id,
             createdBy: req.user._id
         });
 
-        await require('mongoose').model('User').updateOne({ _id: employeeId }, { $set: { ['leaveBalance.' + canonicalName]: amount } });
+        // 4. Accurate final balance: opening + accrued - approvedUsed
+        const netBalance = Math.max(0, parseFloat((numericAmount + accrualResult.accruedDays - accrualResult.approvedUsed).toFixed(4)));
+
+        // Update user leaveBalance map cleanly
+        const freshUser = await User.findById(employeeId);
+        if (freshUser) {
+            if (!freshUser.leaveBalance) {
+                freshUser.leaveBalance = new Map();
+            }
+
+            const typeResolutionMap = {};
+            activeLeaveTypes.forEach(lt => {
+                typeResolutionMap[lt.name.toLowerCase()] = lt.name;
+                typeResolutionMap[lt.code.toLowerCase()] = lt.name;
+            });
+
+            for (const key of Array.from(freshUser.leaveBalance.keys())) {
+                const resolved = typeResolutionMap[key.toLowerCase()] || key.toLowerCase();
+                if (resolved === canonicalName) {
+                    freshUser.leaveBalance.delete(key);
+                }
+            }
+
+            freshUser.leaveBalance.set(canonicalName, netBalance);
+            freshUser.markModified('leaveBalance');
+            await freshUser.save();
+        }
 
         res.json({
             status: 'success',
             data: {
                 employeeId,
                 leaveType: canonicalName,
-                newBalance: amount
+                openingAmount: numericAmount,
+                accruedAmount: accrualResult.accruedDays,
+                approvedUsed: accrualResult.approvedUsed,
+                newBalance: netBalance,
+                recordedDate: recMoment.format('YYYY-MM-DD'),
+                uploadDate: uploadMoment.format('YYYY-MM-DD')
             }
         });
     }),

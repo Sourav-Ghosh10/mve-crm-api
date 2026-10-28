@@ -44,6 +44,7 @@ const payrollValidator = {
     monthlyCTC: Joi.number().min(0).required(),
     effectiveFrom: Joi.date().required(),
     isActive: Joi.boolean().default(true),
+    revisionReason: Joi.string().allow('', null).default('Initial Salary Setup'),
     items: Joi.array().items(Joi.object({
       masterId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
       overrideValue: Joi.number().min(0).allow(null),
@@ -55,11 +56,25 @@ const payrollValidator = {
     monthlyCTC: Joi.number().min(0),
     effectiveFrom: Joi.date(),
     isActive: Joi.boolean(),
+    revisionReason: Joi.string().allow('', null),
     items: Joi.array().items(Joi.object({
       masterId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/),
       overrideValue: Joi.number().min(0).allow(null),
       isActive: Joi.boolean(),
     })),
+  }),
+
+  // Salary Revision
+  createSalaryRevisionSchema: Joi.object({
+    employeeId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+    revisedCTC: Joi.number().min(0).required(),
+    effectiveDate: Joi.date().required(),
+    revisionReason: Joi.string().trim().required(),
+    items: Joi.array().items(Joi.object({
+      masterId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+      overrideValue: Joi.number().min(0).allow(null),
+      isActive: Joi.boolean().default(true),
+    })).optional(),
   }),
 
   // Payslip
